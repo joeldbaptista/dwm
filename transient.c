@@ -1,11 +1,13 @@
 /* cc transient.c -o transient -lX11 */
 
-#include <stdlib.h>
-#include <unistd.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <stdlib.h>
+#include <unistd.h>
 
-int main(void) {
+int
+main(void)
+{
 	Display *d;
 	Window r, f, t = None;
 	XSizeHints h;
