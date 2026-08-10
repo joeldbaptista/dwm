@@ -56,6 +56,14 @@
 #define TAGMASK ((1 << LENGTH(tags)) - 1)
 #define TEXTW(X) (drw_fontset_getwidth(drw, (X)) + lrpad)
 
+/* status text color tags: wrap a span in ^r^ ... ^d^ to draw it in
+ * SchemeUrg (bold, via a faux-bold double draw), or in ^g^ ... ^d^ to draw
+ * it in SchemeGood; ^d^ resets to SchemeNorm. */
+#define TAGRED "^r^"
+#define TAGGRN "^g^"
+#define TAGDEF "^d^"
+#define TAGLEN 3
+
 #define SYSTEM_TRAY_REQUEST_DOCK 0
 
 /* XEMBED messages */
@@ -78,7 +86,9 @@ enum { CurNormal,
        CurMove,
        CurLast }; /* cursor */
 enum { SchemeNorm,
-       SchemeSel }; /* color schemes */
+       SchemeSel,
+       SchemeUrg,
+       SchemeGood }; /* color schemes */
 enum { NetSupported,
        NetWMName,
        NetWMState,
@@ -212,6 +222,7 @@ static void detachstack(Client *c);
 static Monitor *dirtomon(int dir);
 static void drawbar(Monitor *m);
 static void drawbars(void);
+static int drawstatus(Monitor *m, int stw);
 static void enternotify(XEvent *e);
 static void expose(XEvent *e);
 static void focus(Client *c);
@@ -260,6 +271,7 @@ static void seturgent(Client *c, int urg);
 static void showhide(Client *c);
 static void sigchld(int unused);
 static void spawn(const Arg *arg);
+static int statustextw(void);
 static Monitor *systraytomon(Monitor *m);
 static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
@@ -505,7 +517,7 @@ buttonpress(XEvent *e)
 			arg.ui = 1 << i;
 		} else if (ev->x < x + blw)
 			click = ClkLtSymbol;
-		else if (ev->x > selmon->ww - TEXTW(stext) - getsystraywidth())
+		else if (ev->x > selmon->ww - statustextw() - getsystraywidth())
 			click = ClkStatusText;
 		else
 			click = ClkWinTitle;
@@ -821,6 +833,95 @@ dirtomon(int dir)
 	return m;
 }
 
+/* Finds the earliest status color tag in p.
+ * Parameters:
+ *   p    - text to search
+ *   mode - set to 1 (TAGRED), 2 (TAGGRN), or 0 (TAGDEF) for the tag found
+ * Returns: pointer to the tag's start, or nil if none of the tags occur. */
+static char *
+nexttag(char *p, int *mode)
+{
+	char *tagr, *tagg, *tagd, *tag;
+
+	tagr = strstr(p, TAGRED);
+	tagg = strstr(p, TAGGRN);
+	tagd = strstr(p, TAGDEF);
+	tag = NULL;
+	if (tagr && (!tag || tagr < tag))
+		tag = tagr;
+	if (tagg && (!tag || tagg < tag))
+		tag = tagg;
+	if (tagd && (!tag || tagd < tag))
+		tag = tagd;
+	if (tag)
+		*mode = (tag == tagr) ? 1 : (tag == tagg) ? 2 : 0;
+	return tag;
+}
+
+int
+statustextw(void)
+{
+	char buf[sizeof stext];
+	char *p, *tag;
+	int w = 0, mode;
+
+	strcpy(buf, stext);
+	p = buf;
+	for (;;) {
+		tag = nexttag(p, &mode);
+		if (tag)
+			*tag = '\0';
+		w += drw_fontset_getwidth(drw, p);
+		if (!tag)
+			break;
+		p = tag + TAGLEN;
+	}
+	return w + lrpad / 2 + 2; /* matches the padding TEXTW() would add */
+}
+
+/* Renders stext, honoring inline TAGRED/TAGGRN/TAGDEF color tags.
+ * Parameters:
+ *   m   - monitor to draw on
+ *   stw - systray width to reserve on the right
+ * Returns: total pixel width drawn (== statustextw()). */
+int
+drawstatus(Monitor *m, int stw)
+{
+	char buf[sizeof stext];
+	char *p, *tag;
+	int curmode, mode, first, w, lpad, boxw, x, sw;
+
+	sw = statustextw();
+	x = m->ww - sw - stw;
+
+	strcpy(buf, stext);
+	p = buf;
+	curmode = 0;
+	first = 1;
+	for (;;) {
+		tag = nexttag(p, &mode);
+		if (tag)
+			*tag = '\0';
+		w = drw_fontset_getwidth(drw, p);
+		if (w || first || !tag) { /* the trailing chunk always needs drawing for its slack */
+			lpad = first ? lrpad / 2 - 2 : 0;
+			boxw = w + lpad + (tag ? 0 : 4); /* 4px trailing slack on the last chunk */
+			drw_setscheme(drw, scheme[curmode == 1 ? SchemeUrg : curmode == 2 ? SchemeGood : SchemeNorm]);
+			drw_text(drw, x, 0, boxw, bh, lpad, p, 0);
+			if (curmode == 1) /* faux-bold: redraw glyphs offset by 1px */
+				drw_text(drw, x, 0, boxw, bh, lpad + 1, p, 0);
+			x += boxw;
+			first = 0;
+		}
+		if (!tag)
+			break;
+		curmode = mode;
+		p = tag + TAGLEN;
+	}
+
+	return sw;
+}
+
 void
 drawbar(Monitor *m)
 {
@@ -834,11 +935,8 @@ drawbar(Monitor *m)
 		stw = getsystraywidth();
 
 	/* draw status first so it can be overdrawn by tags later */
-	if (m == selmon) { /* status is only drawn on selected monitor */
-		drw_setscheme(drw, scheme[SchemeNorm]);
-		sw = TEXTW(stext) - lrpad / 2 + 2; /* 2px right padding */
-		drw_text(drw, m->ww - sw - stw, 0, sw, bh, lrpad / 2 - 2, stext, 0);
-	}
+	if (m == selmon) /* status is only drawn on selected monitor */
+		sw = drawstatus(m, stw);
 
 	resizebarwin(m);
 	for (c = m->clients; c; c = c->next) {
